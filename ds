@@ -1,0 +1,807 @@
+//-----------------------------------------------------------------------------
+// Desc: Создание графа и получение связанных с ним интерфейсов.
+//-----------------------------------------------------------------------------
+HRESULT CAWSrcBase::QueryBaseInterfaces()
+{
+  m_pAWLog->Msg(_T("->QueryBaseInterfaces()"));
+
+	HRESULT hr;
+
+	hr = CoCreateInstance(CLSID_FilterGraph, NULL, CLSCTX_INPROC, IID_IGraphBuilder, (void **)&m_pGraphBuilder);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! QueryBaseInterfaces() : CoCreateInstance(CLSID_FilterGraph, ...).")); 
+		return hr;
+	}
+
+	hr = m_pGraphBuilder->QueryInterface(IID_IMediaControl, (void **)&m_pMediaControl);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! QueryBaseInterfaces() : IGraphBuilder::QueryInterface(IID_IMediaControl, ...).")); 
+		return hr;
+	}
+
+	hr = m_pGraphBuilder->QueryInterface(IID_IMediaEventEx, (void **)&m_pMediaEventEx);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! QueryBaseInterfaces() : IGraphBuilder::QueryInterface(IID_IMediaEventEx, ...).")); 
+		return hr;
+	}
+
+	hr = m_pMediaEventEx->SetNotifyWindow(OAHWND(m_hWnd), WM_GRAPHNOTIFY, 0);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! QueryBaseInterfaces() : IMediaEventEx::SetNotifyWindow().")); 
+		return hr;
+	}
+	
+	hr = m_pGraphBuilder->QueryInterface(IID_IMediaSeeking, (void **)&m_pMediaSeeking);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! QueryBaseInterfaces() : IGraphBuilder::QueryInterface(IID_IMediaSeeking, ...).")); 
+		// return hr; // Нужен только для файла.
+	}
+
+	hr = m_pGraphBuilder->QueryInterface(IID_IVideoWindow, (void **)&m_pVideoWindow);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! QueryBaseInterfaces() : IGraphBuilder::QueryInterface(IID_IVideoWindow, ...).")); 
+		return hr;
+	}
+
+	m_pAWLog->Msg(_T("<-QueryBaseInterfaces()"));
+
+	return S_OK;
+}
+
+
+//-----------------------------------------------------------------------------
+// Desc: Добавляет в родительский класс экземпляр AVI Decompressor.
+//-----------------------------------------------------------------------------
+HRESULT CAWSrcBase::ObtainAVIDecompressorFilter()
+{
+	m_pAWLog->Msg(_T("->ObtainAVIDecompressorFilter()"));
+
+	HRESULT hr;
+
+	// ICreateDevEnum interface.
+	ICreateDevEnum *pCreateDevEnum = 0;
+	hr = CoCreateInstance( CLSID_SystemDeviceEnum, NULL, CLSCTX_INPROC_SERVER, IID_ICreateDevEnum, (void **)&pCreateDevEnum );
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! ObtainAVIDecompressorFilter() : CoCreateInstance(CLSID_SystemDeviceEnum, ...)."));
+		return hr;
+	}
+
+	// IEnumMoniker interface.
+	IEnumMoniker *pEnumMoniker = 0;
+	hr = pCreateDevEnum->CreateClassEnumerator( CLSID_LegacyAmFilterCategory, &pEnumMoniker, 0 );
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! ObtainAVIDecompressorFilter() : ICreateDevEnum::CreateClassEnumerator()."));
+		return hr;
+	}
+
+	// IEnumMoniker::Reset().
+	hr = pEnumMoniker->Reset();
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! ObtainAVIDecompressorFilter() : IEnumMoniker::Reset()."));
+		return hr;
+	}
+
+	// IMoniker interface.
+	ULONG celtFetched;
+	IMoniker *pMoniker = 0;
+
+	// IPropertyBag interface.
+	VARIANT var;
+	var.vt = VT_BSTR;
+	IPropertyBag *pPropertyBag = 0;
+
+	// Enumerating process.
+	wchar_t *neededName = L"AVI Decompressor";
+	wchar_t *friendlyName = new wchar_t[32];
+	friendlyName[0] = 0;
+	bool found = false;
+
+	while (pEnumMoniker->Next(1, &pMoniker, &celtFetched) == S_OK)
+	{
+		hr = pMoniker->BindToStorage(NULL, NULL, IID_IPropertyBag, (void **)&pPropertyBag);
+		if (SUCCEEDED(hr))
+		{
+			hr = pPropertyBag->Read(L"FriendlyName", &var, NULL);
+			if (SUCCEEDED(hr))
+			{
+				if (neededName == (wchar_t *)var.bstrVal)
+				{
+					found = true;
+					break;
+				}
+				else
+					continue;
+			}
+			else
+			{
+				m_pAWLog->Msg(_T("ERROR! ObtainAVIDecompressorFilter() : IPropertyBag::Read()."));
+				return hr;
+			}
+		}
+		else
+		{
+			m_pAWLog->Msg(_T("ERROR! ObtainAVIDecompressorFilter() : IMonoker::BindToStorage()."));
+			return hr;
+		}
+	}
+
+	// There wasn't.
+	if (!found)
+		return E_NOINTERFACE;
+
+	// IBaseFilter interface.
+	//hr = m_pAVIDecompressorFilter->
+
+	m_pAWLog->Msg(_T("<-ObtainAVIDecompressorFilter()"));
+		
+	return S_OK;
+}
+
+
+//-----------------------------------------------------------------------------
+// Desc: Добавление фильтров в граф видеозахвата.
+//-----------------------------------------------------------------------------
+HRESULT CAWSrcBase::PlaceFilters()
+{
+	m_pAWLog->Msg(_T("->PlaceFilters()"));
+
+	HRESULT hr;
+
+	// Source filter.
+	hr = m_pGraphBuilder->AddFilter(m_pSrcFilter, L"Video Capture");
+	if(FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IGraphBuilder::AddFilter(m_pSrcFilter, ...)."));
+		return hr;
+	}
+
+	// AVI decompressor filter.
+	/*hr = CoCreateInstance(CLSID_AVIDec, NULL, CLSCTX_INPROC, IID_IBaseFilter, (void**)&m_pAVIDecompressorFilter);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("Cann't create AVIDecompressor Filter"));
+		return hr;
+	}
+
+	hr = m_pGraphBuilder->AddFilter(m_pAVIDecompressorFilter, L"AVI Decompressor");
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("Cann't add AVIDecompressor filter to graph"));
+		return hr;
+	}*/
+
+	// Sample Grabber filter.
+	hr = CoCreateInstance(CLSID_SampleGrabber, NULL, CLSCTX_INPROC, IID_IBaseFilter, (void **)&m_pSampleGrabberFilter);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! PlaceFilters() : CoCreateInstance(CLSID_SampleGrabber, ...)."));
+		return hr;
+	}
+
+	hr = m_pGraphBuilder->AddFilter(m_pSampleGrabberFilter, L"Sample Grabber");
+	if(FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IGraphBuilder::AddFilter(m_pSampleGrabberFilter, ...)."));
+		return hr;
+	}
+	
+	// Настраиваем граббер до соединения с остальними фильтрами.
+	hr = TuneSampleGrabber();
+	if(FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! PlaceFilters() : TuneSampleGrabber()."));
+		return hr;
+	}
+
+	// Video Renderer filter.
+	CLSID clsid = CLSID_VideoRenderer;
+	switch (m_nVideoRenderer)
+	{
+		case VR_NULLRENDERER:		  { clsid = CLSID_NullRenderer; m_fViewVideoWindow = false; break; }
+		case VR_VIDEORENDERER:		  { clsid = CLSID_VideoRenderer;							break; }
+		case VR_VIDEOMIXINGRENDERER:  { clsid = CLSID_VideoMixingRenderer;						break; }
+		case VR_VIDEOMIXINGRENDERER9: { clsid = CLSID_VideoMixingRenderer9;						break; }
+	}
+
+	hr = CoCreateInstance(clsid, NULL, CLSCTX_INPROC, IID_IBaseFilter, (void **)&m_pVideoRendererFilter) ;
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! PlaceFilters() : CoCreateInstance(clsid, ...)."));
+		return hr;
+	}
+
+	hr = m_pGraphBuilder->AddFilter(m_pVideoRendererFilter, L"Video Renderer");
+	if(FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IGraphBuilder::AddFilter(m_pVideoRendererFilter, ...)."));
+		return hr;
+	}
+
+	// Настраиваем фильтр отображения.
+	// Обязательно вручную устанавливает требуемое количество входных каналов,
+	// для возможности последующего использования IVMRMixerControl:
+	// "The IVMRMixerControl interface is enables an application to manipulate the
+	// incoming video streams on the Video Mixing Renderer Filter 7 (VMR-7). Although
+	// this interface is implemented on the filter, it is actually the mixer component
+	// that is being configured. For this reason, this interface is only available
+	// when the mixer has been loaded through a call to IVMRFilterConfig::SetNumberOfStreams".
+	
+	switch (m_nVideoRenderer)
+	{	
+		case VR_VIDEOMIXINGRENDERER:
+		{
+			IVMRFilterConfig* pVMRFilterConfig = 0;
+			hr = m_pVideoRendererFilter->QueryInterface(IID_IVMRFilterConfig, (void **)&pVMRFilterConfig);
+			if (FAILED(hr))
+			{
+				m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IBaseFilter::QueryInterface(IID_IVMRFilterConfig, ...)."));
+			}
+			else
+			{
+				hr = pVMRFilterConfig->SetNumberOfStreams(1);
+				if (FAILED(hr))
+				{
+					m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IVMRFilterConfig::SetNumberOfStreams()."));
+				}
+				else
+				{
+					m_pAWLog->Msg(_T("Video Mixing Renderer: Set one input stream succeeded."));
+				}
+				SAFE_RELEASE(pVMRFilterConfig);
+				
+
+				IVMRMixerControl* pVMRMixerControl = 0;
+				hr = m_pVideoRendererFilter->QueryInterface(IID_IVMRMixerControl, (void **)&pVMRMixerControl);
+				if (FAILED(hr))
+				{
+					m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IBaseFilter::QueryInterface(IID_IVMRMixerControl, ...)."));
+				}
+				else
+				{
+					DWORD dwMixingPrefs = 0;
+					hr = pVMRMixerControl->GetMixingPrefs(&dwMixingPrefs);
+					if (FAILED(hr))
+					{
+						m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IVMRMixerControl::GetMixingPrefs() (outside)."));
+					}
+					else
+					{
+						// Установка режима фильтрации.
+						// (по умолчанию используется билинейная)
+						dwMixingPrefs &= ~MixerPref_FilteringMask;
+
+						DWORD dwFiltering = MixerPref_PointFiltering;
+						switch (m_nFilteringMode)
+						{
+							case AWFM_POINTING: { dwFiltering = MixerPref_PointFiltering;	 break; }
+							case AWFM_BILINEAR: { dwFiltering = MixerPref_BiLinearFiltering; break; }
+						}
+
+						dwMixingPrefs = dwMixingPrefs | dwFiltering;
+
+						hr = pVMRMixerControl->SetMixingPrefs(dwMixingPrefs);
+						if (FAILED(hr))
+						{
+							m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IVMRMixerControl::SetMixingPrefs()."));
+						}
+						else
+						{
+							m_pAWLog->Msg(_T("Video Mixing Renderer: Set video filter mode succeded."));
+						}
+
+						hr = pVMRMixerControl->GetMixingPrefs(&dwMixingPrefs);
+						if (FAILED(hr))
+						{
+							m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IVMRMixerControl::GetMixingPrefs() (inside)."));
+						}
+					}
+					SAFE_RELEASE(pVMRMixerControl);
+				}
+			}
+		}
+		break;
+
+		case VR_VIDEOMIXINGRENDERER9:
+		{
+			IVMRFilterConfig9* pVMRFilterConfig9 = 0;
+			hr = m_pVideoRendererFilter->QueryInterface(IID_IVMRFilterConfig9, (void **)&pVMRFilterConfig9);
+			if (FAILED(hr))
+			{
+				m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IBaseFilter::QueryInterface(IID_IVMRFilterConfig9, ...)."));
+			}
+			else
+			{
+				hr = pVMRFilterConfig9->SetNumberOfStreams(1);
+				if (FAILED(hr))
+				{
+					m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IVMRFilterConfig9::SetNumberOfStreams()."));
+				}
+				else
+				{
+					m_pAWLog->Msg(_T("Video Mixing Renderer 9: Set one input stream succeeded."));
+				}
+				SAFE_RELEASE(pVMRFilterConfig9);
+
+
+				IVMRMixerControl9* pVMRMixerControl9 = 0;
+				hr = m_pVideoRendererFilter->QueryInterface(IID_IVMRMixerControl9, (void **)&pVMRMixerControl9);
+				if (FAILED(hr))
+				{
+					m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IBaseFilter::QueryInterface(IID_IVMRMixerControl9, ...)."));
+				}
+				else
+				{
+					DWORD dwMixingPrefs = 0;
+					hr = pVMRMixerControl9->GetMixingPrefs(&dwMixingPrefs);
+					if (FAILED(hr))
+					{
+						m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IVMRMixerControl9::GetMixingPrefs() (outside)."));
+					}
+					else
+					{
+						// Установка режима фильтрации
+						// (по умолчанию исплользуется билинейная)
+						dwMixingPrefs &= ~ MixerPref9_FilteringMask;
+
+						DWORD dwFiltering = MixerPref9_PointFiltering;
+						switch (m_nFilteringMode)
+						{
+							case AWFM_POINTING: { dwFiltering = MixerPref9_PointFiltering;	  break; }
+							case AWFM_BILINEAR: { dwFiltering = MixerPref9_BiLinearFiltering; break; }
+						}
+
+						dwMixingPrefs = dwMixingPrefs | dwFiltering;
+
+						hr = pVMRMixerControl9->SetMixingPrefs(dwMixingPrefs);
+						if (FAILED(hr))
+						{
+							m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IVMRMixerControl9::SetMixingPrefs()."));
+						}
+						else
+						{
+							m_pAWLog->Msg(_T("Video Mixing Renderer 9: Set video filter mode succeded."));
+						}
+
+						hr = pVMRMixerControl9->GetMixingPrefs(&dwMixingPrefs);
+						if (FAILED(hr))
+						{
+							m_pAWLog->Msg(_T("ERROR! PlaceFilters() : IVMRMixerControl9::GetMixingPrefs() (inside)."));
+						}
+					}
+					SAFE_RELEASE(pVMRMixerControl9);
+				}
+			}
+		}
+		break;
+	}
+
+	m_pAWLog->Msg(_T("<-PlaceFilters()"));
+
+	return S_OK;
+}
+
+
+//-----------------------------------------------------------------------------
+// Desc: Настройка граббера.
+//-----------------------------------------------------------------------------
+HRESULT CAWSrcBase::TuneSampleGrabber()
+{
+	m_pAWLog->Msg(_T("->TuneSampleGrabber()"));
+
+	HRESULT hr;
+
+	hr = m_pSampleGrabberFilter->QueryInterface(IID_ISampleGrabber, (void **)&m_pSampleGrabber);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! TuneSampleGrabber() : IBaseFilter::QueryInterface(IID_ISampleGrabber, ...)."));
+		return hr;
+	}
+
+	hr = m_pSampleGrabber->SetOneShot(FALSE); // Нам не нужна остановка графа
+	if(FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! TuneSampleGrabber() : ISampleGrabber::SetOneShot()."));
+		return hr;
+	}
+	
+	// Разрешаем сохраниять изображение с буфер только при включенных скриншотах.
+	// Если скриншоты не включены, то избавляемся от лишнего копирования памяти.
+	hr = m_pSampleGrabber->SetBufferSamples(m_fEnableScreenshots ? TRUE : FALSE);
+	if(FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! TuneSampleGrabber() : ISampleGrabber::SetOneShot()."));
+		return hr;
+	}
+
+	m_pSampleGrabberCB = new CSampleGrabberCB(this);
+
+	hr = m_pSampleGrabber->SetCallback(m_pSampleGrabberCB, 1); // Используем BufferCB.
+	if(FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! TuneSampleGrabber() : ISampleGrabber::SetCallback()."));
+		return hr;
+	}
+
+	// Устанавливаем формат потока граббера в зависимости от формата потока фильтра-источника.
+	AM_MEDIA_TYPE mt;
+	ZeroMemory(&mt, sizeof(AM_MEDIA_TYPE));
+	mt.majortype  = MEDIATYPE_Video;
+	mt.subtype    = MEDIASUBTYPE_RGB24;
+	mt.formattype = GUID_NULL;
+	
+	if (m_VideoDevice == VD_CAM)
+	{
+		IPin *pPin = 0;
+		pPin = GetPin(m_pSrcFilter, PINDIR_OUTPUT);
+		if (pPin == 0)
+		{
+			m_pAWLog->Msg(_T("ERROR! TuneSampleGrabber() : GetPin(m_pSrcFilter, PINDIR_OUTPUT)."));
+		}
+		else
+		{
+			// Обычный запрос формата у пина не проходит, действуем через интерфейс IAMStreamConfig.
+			IAMStreamConfig *pAMStreamConfig = 0;
+			hr = pPin->QueryInterface(IID_IAMStreamConfig, (void **)&pAMStreamConfig);
+			if (FAILED(hr))
+			{
+				m_pAWLog->Msg(_T("ERROR! TuneSampleGrabber() : IPin::QueryInterface(IID_IAMStreamConfig, ...)."));
+			}
+			else
+			{
+				AM_MEDIA_TYPE *pmt = 0;
+
+				hr = pAMStreamConfig->GetFormat(&pmt);
+				if (FAILED(hr))
+				{
+					m_pAWLog->Msg(_T("ERROR! TuneSampleGrabber() : IAMStreamConfig::GetFormat()."));
+				}
+				else
+				{
+					mt.subtype = pmt->subtype;
+					DeleteMediaType(pmt);
+					pmt = 0;
+				}
+				SAFE_RELEASE(pAMStreamConfig);
+			}
+			SAFE_RELEASE(pPin);
+		}
+
+		// Вручную меняем значение m_nSGFilterFormat.
+		if (mt.subtype == MEDIASUBTYPE_YUY2)
+			m_nSGFilterFormat = FF_YUY2;
+		else
+		{
+			mt.subtype = MEDIASUBTYPE_RGB24; // Если отчичается от YUY2, то
+			m_nSGFilterFormat = FF_RGB24;    // принудительно устанавливаем в RGB24.
+		}
+	}
+	else
+	{
+		switch (m_nSGFilterFormat)
+		{
+			case FF_YUY2:  { mt.subtype = MEDIASUBTYPE_YUY2;								break; }
+			case FF_RGB24: { mt.subtype = MEDIASUBTYPE_RGB24;								break; }
+			// Если формат отличен от используемых, то принудительно устанавливаем в RGB24.
+			default:	   { mt.subtype = MEDIASUBTYPE_RGB24; m_nSGFilterFormat = FF_RGB24; break; }		
+		}
+	}
+
+	//*******************************************************************
+	//
+	// Можно сразу так. У Савостикова тягомотнее. Однако здесь задаётся
+	// тип фильтра-источника целиком, а не только три основных поля.
+	// Ввиду обнаруженных багов данный метод заккоментирован.
+	//
+	// mt = *(GetMediaTypeOnSourceFilter(m_pSrcFilter));
+	//
+	//*******************************************************************
+
+	hr = m_pSampleGrabber->SetMediaType(&mt);
+	if(FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! TuneSampleGrabber() : ISampleGrabber::SetMediaType()."));
+		return hr;
+	}
+
+	m_pAWLog->Msg(_T("<-TuneSampleGrabber()"));
+
+	return S_OK;
+}
+
+
+//-----------------------------------------------------------------------------
+// Desc: Соединяет фильтры в графе.
+//-----------------------------------------------------------------------------
+HRESULT CAWSrcBase::ConnectFilters()
+{
+	m_pAWLog->Msg(_T("->ConnectFilters()"));
+
+	HRESULT hr;
+
+	IPin *pPinOut = 0;
+	IPin *pPinIn = 0;
+
+	//
+	// Try to connect without AVI decompressor.
+	//
+	//		-----------       -----------       -----------
+	//		|   Src   |  <->  | Grabber |  <->  |  Rend.  |
+	//		-----------       -----------       -----------
+	//
+
+	// Src <-> SampleGrabber.
+	pPinOut = GetPin(m_pSrcFilter, PINDIR_OUTPUT);
+	if (pPinOut == 0)
+	{
+		m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pSrcFilter, PINDIR_OUTPUT)."));
+	}
+	pPinIn = GetPin(m_pSampleGrabberFilter, PINDIR_INPUT);
+	if (pPinIn == 0)
+	{
+		m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pSampleGrabberFilter, PINDIR_INPUT)."));
+	}
+	hr = m_pGraphBuilder->Connect(pPinOut, pPinIn);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IGraphBuilder::Connect( <Src> , <SampleGrabber> )."));
+		SAFE_RELEASE(pPinIn);
+		SAFE_RELEASE(pPinOut);
+		return hr;
+	}
+	SAFE_RELEASE(pPinIn);
+	SAFE_RELEASE(pPinOut);
+
+	// SampleGrabber <-> VideoRenderer.
+	pPinOut = GetPin(m_pSampleGrabberFilter, PINDIR_OUTPUT);
+	if (pPinOut == 0)
+	{
+		m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pSampleGrabberFilter, PINDIR_OUTPUT)."));
+	}
+	pPinIn = GetPin(m_pVideoRendererFilter, PINDIR_INPUT);
+	if (pPinIn == 0)
+	{
+		m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pVideoRendererFilter, PINDIR_INPUT)."));
+	}
+	hr = m_pGraphBuilder->Connect(pPinOut, pPinIn); 
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IGraphBuilder::Connect( <SampleGrabber> , <VideoRenderer> )."));
+		SAFE_RELEASE(pPinIn);
+		SAFE_RELEASE(pPinOut);
+		return hr;
+	}
+	SAFE_RELEASE(pPinIn);
+	SAFE_RELEASE(pPinOut);
+
+	// Check for connection.
+	pPinOut = GetPin(m_pSrcFilter, PINDIR_OUTPUT); 
+	if (pPinOut == 0)
+	{
+		m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pSrcFilter, PINDIR_OUTPUT) (checking)."));
+	}
+	pPinIn = GetPin(m_pSampleGrabberFilter, PINDIR_INPUT);
+	if (pPinIn == 0)
+	{
+		m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pSampleGrabberFilter, PINDIR_INPUT) (checking)."));
+	}
+	hr = pPinIn->ConnectedTo( &pPinOut );
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("Connection info : couldn't connect filters without AVIDec filter."));
+		//
+		// Try to connect through AVI decompressor. Especially for Chinese Capture Plate.
+		//
+		//		-----------       -----------       -----------       -----------
+		//		|   Src   |  <->  | AVIDec  |  <->  | Grabber |  <->  |  Rend.  |
+		//		-----------       -----------       -----------       -----------
+		//
+		SAFE_RELEASE(pPinIn);
+		SAFE_RELEASE(pPinOut);
+
+		// Src <-> AVIDec.
+		pPinOut = GetPin(m_pSrcFilter, PINDIR_OUTPUT);
+		if (pPinOut == 0)
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pSrcFilter, PINDIR_OUTPUT)."));
+		}
+		pPinIn = GetPin(m_pAVIDecompressorFilter, PINDIR_INPUT);
+		if (pPinIn == 0)
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pAVIDecompressorFilter, PINDIR_INPUT)."));
+		}
+		hr = m_pGraphBuilder->Connect(pPinOut, pPinIn);
+		if (FAILED(hr))
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IGraphBuilder::Connect( <Src> , <AVIDecompressor> )."));
+			SAFE_RELEASE(pPinIn);
+			SAFE_RELEASE(pPinOut);
+			return hr;
+		}
+		SAFE_RELEASE(pPinIn);
+		SAFE_RELEASE(pPinOut);
+
+		// AVIDec <-> SampleGrabber.
+		pPinOut = GetPin(m_pAVIDecompressorFilter, PINDIR_OUTPUT);
+		if (pPinOut == 0)
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pAVIDecompressorFilter, PINDIR_OUTPUT)."));
+		}
+		pPinIn = GetPin(m_pSampleGrabberFilter, PINDIR_INPUT);
+		if (pPinIn == 0)
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pSampleGrabberFilter, PINDIR_INPUT)."));
+		}
+		hr = m_pGraphBuilder->Connect(pPinOut, pPinIn);
+		if (FAILED(hr))
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IGraphBuilder::Connect( <AVIDecompressor> , <SampleGrabber> )."));
+			SAFE_RELEASE(pPinIn);
+			SAFE_RELEASE(pPinOut);
+			return hr;
+		}
+		SAFE_RELEASE(pPinIn);
+		SAFE_RELEASE(pPinOut);
+
+		// SampleGrabber <-> VideoRenderer.
+		pPinOut = GetPin(m_pSampleGrabberFilter, PINDIR_OUTPUT);
+		if (pPinOut == 0)
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pSampleGrabberFilter, PINDIR_OUTPUT)."));
+		}
+		pPinIn = GetPin(m_pVideoRendererFilter, PINDIR_INPUT);
+		if (pPinIn == 0)
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : GetPin(m_pVideoRendererFilter, PINDIR_INPUT)."));
+		}
+		hr = m_pGraphBuilder->Connect(pPinOut, pPinIn); 
+		if (FAILED(hr))
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IGraphBuilder::Connect( <SampleGrabber> , <VideoRenderer> )."));
+			SAFE_RELEASE(pPinIn);
+			SAFE_RELEASE(pPinOut);
+			return hr;
+		}
+	}
+	SAFE_RELEASE(pPinIn);
+	SAFE_RELEASE(pPinOut);
+
+
+	// Пробуем установить отсчёты в фреймах (по умолчанию - reference time (100-nanosecond units))
+	if (NULL != m_pMediaSeeking)
+	{
+		hr = m_pMediaSeeking->SetTimeFormat(&TIME_FORMAT_FRAME);
+		if (FAILED(hr))
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IMediaSeeking::SetTimeFormat()."));
+		}
+
+		LONGLONG pos = 0;
+		hr = m_pMediaSeeking->SetPositions(&pos, AM_SEEKING_AbsolutePositioning, NULL, AM_SEEKING_NoPositioning);
+		if (FAILED(hr))
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IMediaSeeking::SetPositions()."));
+		}
+	}
+
+
+	// Настраиваем видеоокно.
+	if (VR_NULLRENDERER != m_nVideoRenderer)
+	{
+		hr = m_pVideoWindow->put_Owner((OAHWND)m_hWnd);
+		if (FAILED(hr))
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IVideoWindow::put_Owner()."));
+			return hr;
+		}
+
+		hr = m_pVideoWindow->put_MessageDrain((OAHWND)m_hWnd);
+		if (FAILED(hr))
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IVideoWindow::put_MessageDrain()."));
+			return hr;
+		}
+
+		RECT rcClient;
+		GetClientRect(m_hWnd, &rcClient);
+		hr = m_pVideoWindow->SetWindowPosition(0, 0, rcClient.right, rcClient.bottom);
+		if (FAILED(hr))
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IVideoWindow::SetWindowPosition()."));
+		}
+
+		hr = m_pVideoWindow->put_WindowStyle(WS_CHILD | WS_CLIPSIBLINGS);
+		if (FAILED(hr))
+		{
+			m_pAWLog->Msg(_T("ERROR! ConnectFilters() : IVideoWindow::put_WindowStyle()."));
+			return hr;
+		}
+	}
+
+	m_pAWLog->Msg(_T("<-ConnectFilters()"));
+
+	return S_OK;
+}
+
+
+//-----------------------------------------------------------------------------
+// Desc: Запуск графа.
+//-----------------------------------------------------------------------------
+HRESULT CAWSrcBase::Run()
+{
+	m_pAWLog->Msg(_T("->Run()"));
+
+	if (NULL == m_pMediaControl)
+	{
+		m_pAWLog->Msg(_T("ERROR! Run() : m_pMediaControl = 0."));
+		return E_FAIL;
+	}
+
+	HRESULT hr;
+
+	hr = m_pMediaControl->Run();
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! Run() : IMediaControl::Run()."));
+		return hr;
+	}
+
+	m_PlayState = PS_PLAY;
+	
+	if (m_fViewVideoWindow)
+		ShowWindow(m_hWnd, SW_SHOWNA);
+
+	if (m_fViewAWInfoWIndow)
+		ShowWindow(m_hWndInfo, SW_SHOWNA);
+
+	SetStreamTaskbarVisible();
+
+	m_pAWLog->Msg(_T("<-Run()"));
+
+	return S_OK;
+}
+
+
+//-----------------------------------------------------------------------------
+// Desc: Остановка графа.
+//-----------------------------------------------------------------------------
+HRESULT CAWSrcBase::Stop()
+{
+	m_pAWLog->Msg(_T("->Stop()"));
+
+	if (NULL == m_pMediaControl)
+	{
+		m_pAWLog->Msg(_T("ERROR! Stop() : m_pMediaControl = 0."));
+		return E_FAIL;
+	}
+
+	HRESULT hr;
+
+	// hr = m_pMediaControl->StopWhenReady();
+	EnterCriticalSection(&m_csStop);
+	hr = m_pMediaControl->Stop();
+	LeaveCriticalSection(&m_csStop);
+	if (FAILED(hr))
+	{
+		m_pAWLog->Msg(_T("ERROR! Stop() : IMediaControl::Stop()."));
+		return hr;
+	}
+
+	// Закрываем файл для записи видео.
+	if ((NULL != m_pAWFileWriter) && m_pAWFileWriter->IsFileOpened())
+		m_pAWFileWriter->CloseFile();
+
+	m_PlayState = PS_STOP;
+
+	m_pAWLog->Msg(_T("<-Stop()"));
+
+	return S_OK;
+}
